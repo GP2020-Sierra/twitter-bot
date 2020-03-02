@@ -1,6 +1,4 @@
-#  MIT License
-#
-#  Copyright (c) 2020 GP2020-Sierra
+#  Copyright (c) 2020 University of Cambridge Computer Laboratory Group Projects 2020 Team Sierra
 #
 #  Permission is hereby granted, free of charge, to any person obtaining a copy
 #  of this software and associated documentation files (the "Software"), to deal
@@ -20,49 +18,91 @@
 #  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 #  SOFTWARE.
 
-#  MIT License
-#
-#
-#  Permission is hereby granted, free of charge, to any person obtaining a copy
-#  of this software and associated documentation files (the "Software"), to deal
-#  in the Software without restriction, including without limitation the rights
-#  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-#  copies of the Software, and to permit persons to whom the Software is
-#  furnished to do so, subject to the following conditions:
-#
-#
+import argparse
 import datetime
-#  MIT License
-#
-#
-#  Permission is hereby granted, free of charge, to any person obtaining a copy
-#  of this software and associated documentation files (the "Software"), to deal
-#  in the Software without restriction, including without limitation the rights
-#  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-#  copies of the Software, and to permit persons to whom the Software is
-#  furnished to do so, subject to the following conditions:
-#
-#
 import json
 import logging
 import os
 import random
+import statistics
 import sys
-from statistics import mean
-from time import sleep
+import time
+import urllib.parse
 
+import dateutil.parser
+import pytimeparse.timeparse
 import requests
 import tweepy
-from dateutil import parser
 
-CHECK_PERIOD: datetime.timedelta = datetime.timedelta(minutes=15)
-AVERAGING_PERIOD: datetime.timedelta = datetime.timedelta(minutes=15)
-WARNING_PERIOD: datetime.timedelta = datetime.timedelta(minutes=90)
-CO2_WARNING_THRESHOLD = 1_400 # ppm
-CO2_SAFETY_THRESHOLD = 1_000 # ppm
-KEY_FILE: str = "keys.json"
-TEMPLATE_FILE: str = "templates.json"
-summaryURL: str = "https://gp2020-sierra.azurewebsites.net/api/summary"
+argParser: argparse.ArgumentParser = argparse.ArgumentParser(
+    description="Tweets about current conditions in study spaces",
+    add_help=True
+)
+
+# Argument destination names
+# Storing in a bunch of str constants to facilitate renaming
+ATTR_WARNING_THRESHOLD: str = "warning_threshold"
+ATTR_SAFETY_THRESHOLD: str = "safety_threshold"
+ATTR_KEY_FILE: str = "key_file"
+ATTR_TEMPLATE_FILE: str = "template_file"
+ATTR_LOG_FILE: str = "log_file"
+ATTR_LOG_LEVEL: str = "log_level"
+ATTR_SUMMARY_URL: str = "summary_url"
+ATTR_DAEMON: str = "daemon_period"
+ATTR_AVERAGE_PERIOD: str = "averaging_period"
+ATTR_WARNING_PERIOD: str = "warning_period"
+
+argParser.add_argument(     # JSON endpoint
+    dest=ATTR_SUMMARY_URL, type=str,
+    help="URL of JSON summary", metavar="<summary url>"
+)
+argParser.add_argument(     # Warning threshold
+    "-warn", "--warning-threshold", default=1_400, type=int, dest=ATTR_WARNING_THRESHOLD,
+    help="CO\u2082 concentration (ppm) at which to post a warning", metavar="<max. concentration>"
+)
+argParser.add_argument(     # Time threshold
+    "--averaging-period", type=str, dest=ATTR_AVERAGE_PERIOD,
+    help="Time period for which to consider conditions, if none provided considers conditions over all time",
+    metavar="<time threshold> "
+)
+argParser.add_argument(     # Warning repeat period
+    "--warning-period", type=str, dest=ATTR_WARNING_PERIOD,
+    help="How frequently to repeat warnings about rooms with detrimental conditions, "
+         "defaults to <time threshold> if given, otherwise 90 minutes"
+    , metavar="<warning period>"
+)
+argParser.add_argument(     # Safety notice threshold
+    "-safe", "--safety-threshold", default=1_000, type=int, dest=ATTR_SAFETY_THRESHOLD,
+    help="CO\u2082 concentration (ppm) at which to post a safety notice", metavar="<safe concentration>"
+)
+argParser.add_argument(     # Twitter API key file
+    "-keys", "--key-file", default="keys.json", type=str, dest=ATTR_KEY_FILE,
+    # String as only want open while reading file
+    help="Path to file containing Twitter API keys", metavar="<key file>"
+)
+argParser.add_argument(     # Template file
+    "-templates", "--template-file", default="templates.json", type=str, dest=ATTR_TEMPLATE_FILE,
+    # String as only want open while reading file
+    help="Path to file containing templates for tweets", metavar="<template file>"
+)
+argParser.add_argument(     # Log file
+    "-log", "--log-file", type=str, dest=ATTR_LOG_FILE, nargs='?', const=sys.argv[0] + ".log",
+    # String as used as argument for FileHandler constructor
+    help="Log to a file (" + sys.argv[0] + ".log by default), otherwise log messages go to stdout/stderr",
+    metavar="<log file>"
+)
+argParser.add_argument(     # Logging level
+    "--logging-level", default="WARNING", dest=ATTR_LOG_LEVEL,
+    choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"],
+    help="Minumum level of log messages, one of: CRITICAL, ERROR, WARNING, INFO, DEBUG, NOTSET",
+    metavar="<logging level>"
+)
+
+argParser.add_argument(     # Check period
+    # TODO Required for now, making daemon-mode optional will require code restructuring
+    "--daemon", dest=ATTR_DAEMON, required=True,
+    help="Run as daemon, ", metavar="<daemon period>"
+)
 
 INVALID_FILE_SUFFIX: str = "_invalid"
 
@@ -92,22 +132,63 @@ POST_DEVICES: str = "devices"
 POST_COUNT: str = "_count"
 POST_IDX: str = "_idx"
 
+
+def parse_timedelta(string: str) -> datetime.timedelta:
+    secs = pytimeparse.timeparse.timeparse(string)
+    if not secs:
+        raise SyntaxError("Invalid time format: " + string)
+    return datetime.timedelta(seconds=secs)
+
+
+# Parse arguments
+args: argparse.Namespace = argParser.parse_args()
+CO2_WARNING_THRESHOLD: int = getattr(args, ATTR_WARNING_THRESHOLD)
+CO2_SAFETY_THRESHOLD: int = getattr(args, ATTR_SAFETY_THRESHOLD)
+# This shouldn't raise a KeyError as log level is set from list of valid choices
+# noinspection PyProtectedMember
+LOG_LEVEL: int = logging._nameToLevel[getattr(args, ATTR_LOG_LEVEL)]
+LOG_FILE: str or None = getattr(args, ATTR_LOG_FILE)
+KEY_FILE: str = getattr(args, ATTR_KEY_FILE)
+TEMPLATE_FILE: str = getattr(args, ATTR_TEMPLATE_FILE)
+SUMMARY_URL = getattr(args, ATTR_SUMMARY_URL)
+DAEMON_PERIOD: datetime.timedelta or None = \
+    parse_timedelta(getattr(args, ATTR_DAEMON)) if getattr(args, ATTR_DAEMON) else None
+AVERAGING_PERIOD: datetime.timedelta or None = \
+    parse_timedelta(getattr(args, ATTR_AVERAGE_PERIOD)) if getattr(args, ATTR_AVERAGE_PERIOD) else None
+WARNING_PERIOD: datetime.timedelta = \
+    parse_timedelta(getattr(args, ATTR_WARNING_PERIOD)) if getattr(args, ATTR_AVERAGE_PERIOD) \
+        else AVERAGING_PERIOD if AVERAGING_PERIOD else datetime.timedelta(minutes=90)
+
 # Logging
 log: logging.Logger = logging.getLogger(__name__)
-log.setLevel(logging.INFO)
+log.setLevel(LOG_LEVEL)
 fmt: logging.Formatter = logging.Formatter(
     fmt='[%(asctime)-19s] %(levelname)8s: %(message)s'
 )
-# Info/debug output
-stdoutHandler: logging.Handler = logging.StreamHandler(sys.stdout)
-stdoutHandler.addFilter(lambda r: r.levelno <= logging.INFO)
-stdoutHandler.setFormatter(fmt)
-log.addHandler(stdoutHandler)
-# Warning/error/critical output
-stderrHandler: logging.Handler = logging.StreamHandler(sys.stderr)
-stderrHandler.addFilter(lambda r: r.levelno > logging.INFO)
-stdoutHandler.setFormatter(fmt)
-log.addHandler(stderrHandler)
+if LOG_FILE:
+    logFileHandler: logging.Handler = logging.FileHandler(LOG_FILE)
+    logFileHandler.setFormatter(fmt)
+    log.addHandler(logFileHandler)
+else:
+    # Info/debug output
+    stdoutHandler: logging.Handler = logging.StreamHandler(sys.stdout)
+    stdoutHandler.addFilter(lambda r: r.levelno <= logging.INFO)
+    stdoutHandler.setFormatter(fmt)
+    log.addHandler(stdoutHandler)
+    # Warning/error/critical output
+    stderrHandler: logging.Handler = logging.StreamHandler(sys.stderr)
+    stderrHandler.addFilter(lambda r: r.levelno > logging.INFO)
+    stdoutHandler.setFormatter(fmt)
+    log.addHandler(stderrHandler)
+
+# Some simple URL validation
+parse_result = urllib.parse.urlparse(SUMMARY_URL)
+try:
+    assert any([parse_result.netloc, parse_result.path])
+except AttributeError as e:
+    log.critical("Invalid URL: ", SUMMARY_URL)
+    exit(7)
+del parse_result
 
 templates: dict or None = None
 
@@ -220,19 +301,23 @@ overThreshold: dict = {}
 lastTweeted: dict = {}
 try:
     while True:
-        with requests.get(summaryURL) as response:
+        with requests.get(SUMMARY_URL) as response:
             summaryList: list = response.json()
             # Iterate over different locations
             for summary in summaryList:
                 locID: str = summary[LOC_ID]
                 locName: str = summary[LOC_NAME]
                 posts: list = summary[LOC_DATA]
-                # Sort list by timestamps
-                posts.sort(key=lambda p: parser.parse(p[POST_TIMESTAMP]))
-                # Average CO2 level over past [time period]
+                # Sort list by timestamps, no longer necessary but leaving as it's conceptually pleasant
+                posts.sort(key=lambda p: dateutil.parser.parse(p[POST_TIMESTAMP]))
+                # Average CO2 level within time threshold
                 now: datetime.datetime = datetime.datetime.now(tz=datetime.timezone.utc)
                 co2values: list = []
-                for post in filter(lambda p: now - parser.parse(p[POST_TIMESTAMP]) < AVERAGING_PERIOD, posts):
+                for post in filter(
+                        lambda p: now - dateutil.parser.parse(p[POST_TIMESTAMP]) < AVERAGING_PERIOD
+                        if AVERAGING_PERIOD else True,  # Use all if no time threshold provided
+                        posts
+                ):
                     co2values.append(post[POST_CO2])
                 # Threshold
                 if len(co2values) < 1:
@@ -240,7 +325,7 @@ try:
                     log.debug("%s: No recent updates", locID)
                     continue
                 tweetString: str or None = None
-                if mean(co2values) > CO2_WARNING_THRESHOLD:
+                if statistics.mean(co2values) > CO2_WARNING_THRESHOLD:
                     # Check if already warned
                     if (
                             locID in overThreshold.keys() and not overThreshold[locID]
@@ -260,7 +345,7 @@ try:
                             # Too soon to tweet again
                             log.debug("%s: Still above warning threshold, too soon to tweet again", locID)
                     overThreshold[locID] = True
-                elif mean(co2values) < CO2_SAFETY_THRESHOLD:
+                elif statistics.mean(co2values) < CO2_SAFETY_THRESHOLD:
                     if locID in overThreshold.keys() and overThreshold[locID]:
                         # Dropped below safety threshold
                         log.debug("%s: Dropped below safety threshold.", locID)
@@ -277,7 +362,7 @@ try:
                     lastTweeted[locID] = datetime.datetime.now()
                 else:
                     log.debug("%s: No tweet needed", locID)
-        sleep(CHECK_PERIOD.total_seconds()) # TODO Catch keyboard interrupt to cleanly exit
+        time.sleep(DAEMON_PERIOD.total_seconds())  # TODO Catch keyboard interrupt to cleanly exit
 except KeyError as e:
     log.critical("Fetched JSON object missing key: %s", e)
     exit(9)
