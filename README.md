@@ -49,6 +49,7 @@ to check it has access.
 
 ## Future extensions
 (in rough order of implementation)
+- Include timestamps in templates
 - Only create template file if argument given but invalid/nonexistant
 - More/richer tweet templates
     - Provide more values to templates, e.g. thresholds, values of CO₂, temperature, etc. 

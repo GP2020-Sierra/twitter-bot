@@ -52,46 +52,46 @@ ATTR_DAEMON: str = "daemon_period"
 ATTR_AVERAGE_PERIOD: str = "averaging_period"
 ATTR_WARNING_PERIOD: str = "warning_period"
 
-argParser.add_argument(     # JSON endpoint
+argParser.add_argument(  # JSON endpoint
     dest=ATTR_SUMMARY_URL, type=str,
     help="URL of JSON summary", metavar="<summary url>"
 )
-argParser.add_argument(     # Warning threshold
+argParser.add_argument(  # Warning threshold
     "-warn", "--warning-threshold", default=1_400, type=int, dest=ATTR_WARNING_THRESHOLD,
     help="CO\u2082 concentration (ppm) at which to post a warning", metavar="<max. concentration>"
 )
-argParser.add_argument(     # Safety notice threshold
+argParser.add_argument(  # Safety notice threshold
     "-safe", "--safety-threshold", default=1_000, type=int, dest=ATTR_SAFETY_THRESHOLD,
     help="CO\u2082 concentration (ppm) at which to post a safety notice", metavar="<safe concentration>"
 )
-argParser.add_argument(     # Time threshold
+argParser.add_argument(  # Time threshold
     "--averaging-period", type=str, dest=ATTR_AVERAGE_PERIOD,
     help="Time period for which to consider conditions, if not provided conditions over all time are considered",
     metavar="<time threshold> "
 )
-argParser.add_argument(     # Warning repeat period
+argParser.add_argument(  # Warning repeat period
     "--warning-period", type=str, dest=ATTR_WARNING_PERIOD,
     help="How frequently to repeat warnings about rooms with detrimental conditions, "
          "defaults to <time threshold> if given, otherwise 90 minutes"
     , metavar="<warning period>"
 )
-argParser.add_argument(     # Twitter API key file
+argParser.add_argument(   # Twitter API key file
     "-keys", "--key-file", default="keys.json", type=str, dest=ATTR_KEY_FILE,
     # String as only want open while reading file
     help="Path to file containing Twitter API keys, defaults to keys.json", metavar="<key file>"
 )
-argParser.add_argument(     # Template file
+argParser.add_argument(  # Template file
     "-templates", "--template-file", default="templates.json", type=str, dest=ATTR_TEMPLATE_FILE,
     # String as only want open while reading file
     help="Path to file containing templates for tweets, defaults to templates.json", metavar="<template file>"
 )
-argParser.add_argument(     # Log file
+argParser.add_argument(  # Log file
     "-log", "--log-file", type=str, dest=ATTR_LOG_FILE, nargs='?', const=sys.argv[0] + ".log",
     # String as used as argument for FileHandler constructor
     help="Log to a file (" + sys.argv[0] + ".log by default), otherwise log messages go to stdout/stderr",
     metavar="log file"
 )
-argParser.add_argument(     # Logging level
+argParser.add_argument(  # Logging level
     "--logging-level", default="WARNING", dest=ATTR_LOG_LEVEL,
     choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"],
     help="Minimum level of log messages, one of: CRITICAL, ERROR, WARNING, INFO, DEBUG, NOTSET",
@@ -104,6 +104,7 @@ argParser.add_argument(     # Check period
 )
 
 INVALID_FILE_SUFFIX: str = "_invalid"
+TWEET_TIMESTAMP_FORMAT: str = "%a %d %b %H:%M"
 
 # API key attributes
 KEYS_API: str = "api"
@@ -233,6 +234,10 @@ def make_template_file():
         )
 
 
+def now():
+    return datetime.datetime.now(tz=datetime.timezone.utc)
+
+
 api: tweepy.API or None = None
 # Access Twitter API
 try:
@@ -310,10 +315,10 @@ try:
                 # Sort list by timestamps, no longer necessary but leaving as it's conceptually pleasant
                 posts.sort(key=lambda p: dateutil.parser.parse(p[POST_TIMESTAMP]))
                 # Average CO2 level within time threshold
-                now: datetime.datetime = datetime.datetime.now(tz=datetime.timezone.utc)
+                currentTime: datetime.datetime = datetime.datetime.now(tz=datetime.timezone.utc)
                 co2values: list = []
                 for post in filter(
-                        lambda p: now - dateutil.parser.parse(p[POST_TIMESTAMP]) < AVERAGING_PERIOD
+                        lambda p: currentTime - dateutil.parser.parse(p[POST_TIMESTAMP]) < AVERAGING_PERIOD
                         if AVERAGING_PERIOD else True,  # Use all if no time threshold provided
                         posts
                 ):
@@ -336,7 +341,7 @@ try:
                             templates[TEMPLATE_WARNING][TEMPLATE_WARNING_NEW])  # Choose random template
                     else:
                         # Remains above threshold
-                        if (datetime.datetime.now() - lastTweeted[locID]) >= WARNING_PERIOD:
+                        if (now() - lastTweeted[locID]) >= WARNING_PERIOD:
                             # Long enough to tweet again
                             log.debug("%s: Still above warning threshold, tweeting again.", locID)
                             tweetString = random.choice(templates[TEMPLATE_WARNING][TEMPLATE_WARNING_CONTINUED])
@@ -352,13 +357,21 @@ try:
                     overThreshold[locID] = False
                 # Tweet
                 if tweetString:
-                    tweetString = (tweetString + " #sierra_{placeID}").format(
+                    tweetString = now().strftime(TWEET_TIMESTAMP_FORMAT) + " " + (
+                                tweetString + " #sierra_{placeID}").format(
                         placeName=locName,
                         placeID=locID.replace('-', '_')  # No hyphens in hashtags
                     )
-                    log.info("%s: Tweeting: '%s'", locID, tweetString)
-                    api.update_status(tweetString)
-                    lastTweeted[locID] = datetime.datetime.now()
+                    try:
+                        log.info("%s: Tweeting: '%s'", locID, tweetString)
+                        api.update_status(tweetString)
+                        lastTweeted[locID] = now()
+                    except tweepy.error.TweepError as e:
+                        if e.reason == 'Status is a duplicate.':
+                            # TODO Don't know if error code 187 is specifically for duplicates
+                            log.error("Tweet failed as would be a duplicate: %s", tweetString)
+                        else:
+                            raise e
                 else:
                     log.debug("%s: No tweet needed", locID)
         time.sleep(DAEMON_PERIOD.total_seconds())  # TODO Catch keyboard interrupt to cleanly exit
