@@ -60,9 +60,13 @@ argParser.add_argument(     # Warning threshold
     "-warn", "--warning-threshold", default=1_400, type=int, dest=ATTR_WARNING_THRESHOLD,
     help="CO\u2082 concentration (ppm) at which to post a warning", metavar="<max. concentration>"
 )
+argParser.add_argument(     # Safety notice threshold
+    "-safe", "--safety-threshold", default=1_000, type=int, dest=ATTR_SAFETY_THRESHOLD,
+    help="CO\u2082 concentration (ppm) at which to post a safety notice", metavar="<safe concentration>"
+)
 argParser.add_argument(     # Time threshold
     "--averaging-period", type=str, dest=ATTR_AVERAGE_PERIOD,
-    help="Time period for which to consider conditions, if none provided considers conditions over all time",
+    help="Time period for which to consider conditions, if not provided conditions over all time are considered",
     metavar="<time threshold> "
 )
 argParser.add_argument(     # Warning repeat period
@@ -71,37 +75,32 @@ argParser.add_argument(     # Warning repeat period
          "defaults to <time threshold> if given, otherwise 90 minutes"
     , metavar="<warning period>"
 )
-argParser.add_argument(     # Safety notice threshold
-    "-safe", "--safety-threshold", default=1_000, type=int, dest=ATTR_SAFETY_THRESHOLD,
-    help="CO\u2082 concentration (ppm) at which to post a safety notice", metavar="<safe concentration>"
-)
 argParser.add_argument(     # Twitter API key file
     "-keys", "--key-file", default="keys.json", type=str, dest=ATTR_KEY_FILE,
     # String as only want open while reading file
-    help="Path to file containing Twitter API keys", metavar="<key file>"
+    help="Path to file containing Twitter API keys, defaults to keys.json", metavar="<key file>"
 )
 argParser.add_argument(     # Template file
     "-templates", "--template-file", default="templates.json", type=str, dest=ATTR_TEMPLATE_FILE,
     # String as only want open while reading file
-    help="Path to file containing templates for tweets", metavar="<template file>"
+    help="Path to file containing templates for tweets, defaults to templates.json", metavar="<template file>"
 )
 argParser.add_argument(     # Log file
     "-log", "--log-file", type=str, dest=ATTR_LOG_FILE, nargs='?', const=sys.argv[0] + ".log",
     # String as used as argument for FileHandler constructor
     help="Log to a file (" + sys.argv[0] + ".log by default), otherwise log messages go to stdout/stderr",
-    metavar="<log file>"
+    metavar="log file"
 )
 argParser.add_argument(     # Logging level
     "--logging-level", default="WARNING", dest=ATTR_LOG_LEVEL,
     choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"],
-    help="Minumum level of log messages, one of: CRITICAL, ERROR, WARNING, INFO, DEBUG, NOTSET",
+    help="Minimum level of log messages, one of: CRITICAL, ERROR, WARNING, INFO, DEBUG, NOTSET",
     metavar="<logging level>"
 )
-
+# TODO Required for now, making daemon-mode optional will require restructuring pretty much everything
 argParser.add_argument(     # Check period
-    # TODO Required for now, making daemon-mode optional will require code restructuring
     "--daemon", dest=ATTR_DAEMON, required=True,
-    help="Run as daemon, ", metavar="<daemon period>"
+    help="Run as daemon, tweeting every <daemon period>", metavar="<daemon period>"
 )
 
 INVALID_FILE_SUFFIX: str = "_invalid"
