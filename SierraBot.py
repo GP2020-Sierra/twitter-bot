@@ -75,7 +75,7 @@ argParser.add_argument(  # Warning repeat period
          "defaults to <time threshold> if given, otherwise 90 minutes"
     , metavar="<warning period>"
 )
-argParser.add_argument(  # Twitter API key file
+argParser.add_argument(   # Twitter API key file
     "-keys", "--key-file", default="keys.json", type=str, dest=ATTR_KEY_FILE,
     # String as only want open while reading file
     help="Path to file containing Twitter API keys, defaults to keys.json", metavar="<key file>"
@@ -97,8 +97,8 @@ argParser.add_argument(  # Logging level
     help="Minimum level of log messages, one of: CRITICAL, ERROR, WARNING, INFO, DEBUG, NOTSET",
     metavar="<logging level>"
 )
-# TODO Required for currentTime, making daemon-mode optional will require restructuring pretty much everything
-argParser.add_argument(  # Check period
+# TODO Required for now, making daemon-mode optional will require restructuring pretty much everything
+argParser.add_argument(     # Check period
     "--daemon", dest=ATTR_DAEMON, required=True,
     help="Run as daemon, tweeting every <daemon period>", metavar="<daemon period>"
 )
